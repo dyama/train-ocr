@@ -1,91 +1,97 @@
-#!/usr/bin/python
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
 
 import os
 import glob
 import sys
+import subprocess
+import shutil as sh
 
+# Note:
+# /usr/share/tesseract-ocr/tessdata
+# /usr/share/openalpr/runtime_data
 
-TESSERACT_DIR='/storage/projects/alpr/libraries/tesseract-ocr'
+# Execute shell command
+def do(command):
+    print(command)
+    try:
+        r = subprocess.run(command, shell=True).returncode
+        if r != 0:
+            raise("%s => %d" % (command, r))
+    except Exception as e:
+        print(e)
+        sys.exit(1)
 
-os.environ["TESSDATA_PREFIX"] = TESSERACT_DIR
-#os.system("export TESSDATA_PREFIX=" + TESSERACT_DIR)
+# Command locations
+tesseract = sh.which('tesseract')
+unicharset_extractor = sh.which('unicharset_extractor')
+mftraining = sh.which('mftraining')
+cntraining = sh.which('cntraining')
+combine_tessdata = sh.which('combine_tessdata')
+if not all([tesseract, unicharset_extractor, mftraining, cntraining, combine_tessdata]):
+    print('Command not found.')
+    sys.exit(0)
 
-TESSERACT_BIN=TESSERACT_DIR + '/tesseract'
-TESSERACT_TRAINDIR= TESSERACT_DIR + '/training'
-
-
-country = raw_input("Two-Letter Country Code to Train: ").lower()
-
-LANGUAGE_NAME='l' + country
+country = input("Two-Letter Country Code to Train: ").lower()
+lang = 'l' + country
 
 box_files = glob.glob('./' + country + '/input/*.box')
 if not box_files:
-    print "Cannot find input files"
+    print("Cannot find input files")
     sys.exit(1)
 
-os.system("rm ./tmp/*")
+for f in glob.glob('./tmp/*'):
+    os.remove(f)
 
-font_properties_file = open('./tmp/font_properties','w')
+with open('./tmp/font_properties','w') as f:
 
-for box_file in box_files:
-    print "Processing: " + box_file
+    for box_file in box_files:
+        print("Processing: " + box_file)
 
-    file_without_dir = os.path.split(box_file)[1]
-    file_without_ext = os.path.splitext(file_without_dir)[0]
-    input_dir = os.path.dirname(box_file)
+        file_without_dir = os.path.split(box_file)[1]
+        file_without_ext = os.path.splitext(file_without_dir)[0]
+        input_dir = os.path.dirname(box_file)
+        tif_file = input_dir + '/' + file_without_ext + ".tif"
 
-    tif_file = input_dir + '/' + file_without_ext + ".tif"
+        if do('%s %s %s -l jpn nobatch box.train.stderr' % (tesseract, tif_file, file_without_ext)):
+            sys.exit(1)
+        if os.path.exists("./" + file_without_ext + ".tr"):
+            sh.move("./" + file_without_ext + ".tr", "./tmp/" + file_without_ext + ".tr")
+        if os.path.exists("./" + file_without_ext + ".txt"):
+            sh.move("./" + file_without_ext + ".txt", "./tmp/" + file_without_ext + ".txt")
 
-    train_cmd = "%s -l eng %s %s nobatch box.train.stderr" % (TESSERACT_BIN, tif_file, file_without_ext)
-    print "Executing: " + train_cmd 
-    os.system(train_cmd)
-    os.system("mv ./" + file_without_ext + ".tr ./tmp/" + file_without_ext + ".tr")
-    os.system("mv ./" + file_without_ext + ".txt ./tmp/" + file_without_ext + ".txt")
+        font_name=file_without_dir.split('.')[1]
+        f.write(font_name + ' 0 0 1 0 0\n')
 
-    font_name=file_without_dir.split('.')[1]
-    font_properties_file.write(font_name + ' 0 0 1 0 0\n')
-
-font_properties_file.close()
-
-os.system(TESSERACT_TRAINDIR + "/unicharset_extractor ./" + country + "/input/*.box")
-#os.system('mv ./unicharset ./" + country + "/input/" + LANGUAGE_NAME + ".unicharset')
+do('%s ./%s/input/*.box' % (unicharset_extractor, country))
 
 # Shape clustering should currently only be used for the "indic" languages
 #train_cmd = TESSERACT_TRAINDIR + '/shapeclustering -F ./' + country + '/input/font_properties -U unicharset ./' + country + '/input/*.tr'
 #print "Executing: " + train_cmd
-#os.system(train_cmd)
+#do(train_cmd)
 
+do('%s -F ./tmp/font_properties -U unicharset -O ./tmp/%s.unicharset ./tmp/*.tr' % (mftraining, lang))
+os.remove('./unicharset')
+sh.move('./tmp/%s.unicharset' % lang, './%s.unicharset' % lang)
 
-train_cmd = TESSERACT_TRAINDIR + '/mftraining -F ./tmp/font_properties -U unicharset -O ./tmp/' + LANGUAGE_NAME + '.unicharset ./tmp/*.tr'
-print "Executing: " + train_cmd
-os.system(train_cmd)
-os.system("rm ./unicharset")
-os.system("mv ./tmp/" + LANGUAGE_NAME + ".unicharset ./")
-os.system("cp ./" + country + "/input/unicharambigs ./" + LANGUAGE_NAME + ".unicharambigs")
+do('%s ./tmp/*.tr' % cntraining)
+sh.move("./shapetable", "./" + lang + ".shapetable")
+sh.move("./pffmtable", "./" + lang + ".pffmtable")
+sh.move("./inttemp", "./" + lang + ".inttemp")
+sh.move("./normproto", "./" + lang + ".normproto")
 
+do('%s %s.' % (combine_tessdata, lang))
 
-os.system(TESSERACT_TRAINDIR + '/cntraining ./tmp/*.tr')
-
-#os.system("mv ./unicharset ./" + LANGUAGE_NAME + ".unicharset")
-os.system("mv ./shapetable ./" + LANGUAGE_NAME + ".shapetable")
-#os.system("rm ./shapetable")
-os.system("mv ./pffmtable ./" + LANGUAGE_NAME + ".pffmtable")
-os.system("mv ./inttemp ./" + LANGUAGE_NAME + ".inttemp")
-os.system("mv ./normproto ./" + LANGUAGE_NAME + ".normproto")
-
-
-os.system(TESSERACT_TRAINDIR + '/combine_tessdata ' + LANGUAGE_NAME + '.')
-
-# If a config file is in the country's directory, use that.
 config_file = os.path.join('./', country, country + '.config')
 if os.path.isfile(config_file):
-    print "Applying config file: " + config_file
-    trainedata_file = LANGUAGE_NAME + '.traineddata'
-    os.system(TESSERACT_TRAINDIR + '/combine_tessdata -o ' + trainedata_file + ' ' + config_file )
+    # If a config file is in the country's directory, use that.
+    do('%s -o %s.traineddata %s' % (combine_tessdata, lang, config_file))
 
-os.system("mv ./" + LANGUAGE_NAME + ".unicharset ./tmp/")
-os.system("mv ./" + LANGUAGE_NAME + ".shapetable ./tmp/")
-os.system("mv ./" + LANGUAGE_NAME + ".pffmtable ./tmp/")
-os.system("mv ./" + LANGUAGE_NAME + ".inttemp ./tmp/")
-os.system("mv ./" + LANGUAGE_NAME + ".normproto ./tmp/")
-os.system("mv ./" + LANGUAGE_NAME + ".unicharambigs ./tmp/")
+sh.move("./" + lang + ".unicharset", "./tmp/")
+sh.move("./" + lang + ".shapetable", "./tmp/")
+sh.move("./" + lang + ".pffmtable", "./tmp/")
+sh.move("./" + lang + ".inttemp", "./tmp/")
+sh.move("./" + lang + ".normproto", "./tmp/")
+
+sys.exit(0)
+
